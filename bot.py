@@ -1,6 +1,5 @@
 import os
-import json
-from pathlib import Path
+import psycopg
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -11,8 +10,8 @@ from telegram.ext import (
 )
 
 TOKEN = os.environ.get("BOT_TOKEN")
+DATABASE_URL = os.environ.get("DATABASE_URL")
 
-DATA_FILE = Path("progress.json")
 
 # =========================
 # УРОКИ
@@ -68,40 +67,91 @@ LESSONS = [
 
 
 # =========================
-# ПРОГРЕСС
+# POSTGRESQL
 # =========================
 
-def load_data():
-    if not DATA_FILE.exists():
-        return {}
-    try:
-        return json.loads(DATA_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+def get_connection():
+    if not DATABASE_URL:
+        raise RuntimeError("DATABASE_URL is missing")
+
+    return psycopg.connect(DATABASE_URL)
 
 
-def save_data(data):
-    DATA_FILE.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+def init_database():
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id BIGINT PRIMARY KEY,
+                    lesson INTEGER NOT NULL DEFAULT 0,
+                    word INTEGER NOT NULL DEFAULT 0,
+                    quiz INTEGER NOT NULL DEFAULT 0,
+                    xp INTEGER NOT NULL DEFAULT 0,
+                    streak INTEGER NOT NULL DEFAULT 1
+                )
+            """)
 
 
 def get_user(user_id):
-    data = load_data()
-    uid = str(user_id)
+    with get_connection() as conn:
+        with conn.cursor() as cur:
 
-    if uid not in data:
-        data[uid] = {
-            "lesson": 0,
-            "word": 0,
-            "quiz": 0,
-            "xp": 0,
-            "streak": 1,
-        }
-        save_data(data)
+            cur.execute(
+                """
+                INSERT INTO users
+                    (user_id, lesson, word, quiz, xp, streak)
+                VALUES
+                    (%s, 0, 0, 0, 0, 1)
+                ON CONFLICT (user_id) DO NOTHING
+                """,
+                (user_id,)
+            )
 
-    return data, data[uid]
+            cur.execute(
+                """
+                SELECT lesson, word, quiz, xp, streak
+                FROM users
+                WHERE user_id = %s
+                """,
+                (user_id,)
+            )
+
+            row = cur.fetchone()
+
+    return {
+        "lesson": row[0],
+        "word": row[1],
+        "quiz": row[2],
+        "xp": row[3],
+        "streak": row[4],
+    }
+
+
+def update_user(user_id, **kwargs):
+    allowed = {"lesson", "word", "quiz", "xp", "streak"}
+
+    fields = []
+    values = []
+
+    for key, value in kwargs.items():
+        if key in allowed:
+            fields.append(f"{key} = %s")
+            values.append(value)
+
+    if not fields:
+        return
+
+    values.append(user_id)
+
+    sql = f"""
+        UPDATE users
+        SET {", ".join(fields)}
+        WHERE user_id = %s
+    """
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, values)
 
 
 # =========================
@@ -124,6 +174,9 @@ def main_keyboard():
 # =========================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    get_user(update.effective_user.id)
+
     text = (
         "🇨🇳 你好! Добро пожаловать!\n\n"
         "Я твой персональный преподаватель китайского языка. 🧠\n\n"
@@ -145,18 +198,30 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =========================
 
 async def lesson(query):
-    data, user = get_user(query.from_user.id)
 
-    lesson_index = min(user["lesson"], len(LESSONS) - 1)
+    user = get_user(query.from_user.id)
+
+    lesson_index = min(
+        user["lesson"],
+        len(LESSONS) - 1
+    )
+
     current = LESSONS[lesson_index]
 
-    user["word"] = 0
-    save_data(data)
+    update_user(
+        query.from_user.id,
+        word=0
+    )
 
-    await show_word(query, current, 0)
+    await show_word(
+        query,
+        current,
+        0
+    )
 
 
 async def show_word(query, lesson, index):
+
     word, pinyin, translation = lesson["words"][index]
 
     text = (
@@ -169,13 +234,16 @@ async def show_word(query, lesson, index):
     )
 
     if index + 1 < len(lesson["words"]):
+
         keyboard = [[
             InlineKeyboardButton(
                 "➡️ Следующее слово",
                 callback_data=f"word_{index + 1}"
             )
         ]]
+
     else:
+
         keyboard = [[
             InlineKeyboardButton(
                 "🧠 Пройти тест",
@@ -184,7 +252,10 @@ async def show_word(query, lesson, index):
         ]]
 
     keyboard.append([
-        InlineKeyboardButton("🏠 Главное меню", callback_data="menu")
+        InlineKeyboardButton(
+            "🏠 Главное меню",
+            callback_data="menu"
+        )
     ])
 
     await query.edit_message_text(
@@ -198,19 +269,30 @@ async def show_word(query, lesson, index):
 # =========================
 
 async def show_quiz(query, question_index=0):
-    data, user = get_user(query.from_user.id)
 
-    lesson_index = min(user["lesson"], len(LESSONS) - 1)
+    user = get_user(query.from_user.id)
+
+    lesson_index = min(
+        user["lesson"],
+        len(LESSONS) - 1
+    )
+
     current = LESSONS[lesson_index]
 
     if question_index >= len(current["quiz"]):
-        user["xp"] += 30
 
-        if user["lesson"] < len(LESSONS) - 1:
-            user["lesson"] += 1
+        new_xp = user["xp"] + 30
+        new_lesson = user["lesson"]
 
-        user["quiz"] = 0
-        save_data(data)
+        if new_lesson < len(LESSONS) - 1:
+            new_lesson += 1
+
+        update_user(
+            query.from_user.id,
+            xp=new_xp,
+            lesson=new_lesson,
+            quiz=0
+        )
 
         await query.edit_message_text(
             "🎉 Урок завершён!\n\n"
@@ -218,6 +300,7 @@ async def show_quiz(query, question_index=0):
             "Следующий урок разблокирован. 🔓",
             reply_markup=main_keyboard()
         )
+
         return
 
     question, answers, correct = current["quiz"][question_index]
@@ -225,19 +308,26 @@ async def show_quiz(query, question_index=0):
     buttons = []
 
     for i, answer in enumerate(answers):
+
         buttons.append([
             InlineKeyboardButton(
                 answer,
-                callback_data=f"answer_{question_index}_{i}_{correct}"
+                callback_data=(
+                    f"answer_{question_index}_{i}_{correct}"
+                )
             )
         ])
 
     buttons.append([
-        InlineKeyboardButton("🏠 Главное меню", callback_data="menu")
+        InlineKeyboardButton(
+            "🏠 Главное меню",
+            callback_data="menu"
+        )
     ])
 
     await query.edit_message_text(
-        f"🧠 Вопрос {question_index + 1}/{len(current['quiz'])}\n\n"
+        f"🧠 Вопрос "
+        f"{question_index + 1}/{len(current['quiz'])}\n\n"
         f"{question}",
         reply_markup=InlineKeyboardMarkup(buttons)
     )
@@ -248,36 +338,62 @@ async def show_quiz(query, question_index=0):
 # =========================
 
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     query = update.callback_query
+
     await query.answer()
 
     action = query.data
 
     if action == "menu":
+
         await query.edit_message_text(
-            "🇨🇳 Главное меню\n\nЧто будем делать? 👇",
+            "🇨🇳 Главное меню\n\n"
+            "Что будем делать? 👇",
             reply_markup=main_keyboard()
         )
 
     elif action == "lesson":
+
         await lesson(query)
 
     elif action.startswith("word_"):
-        index = int(action.split("_")[1])
 
-        data, user = get_user(query.from_user.id)
-        lesson_index = min(user["lesson"], len(LESSONS) - 1)
+        index = int(
+            action.split("_")[1]
+        )
+
+        user = get_user(
+            query.from_user.id
+        )
+
+        lesson_index = min(
+            user["lesson"],
+            len(LESSONS) - 1
+        )
+
         current = LESSONS[lesson_index]
 
-        user["word"] = index
-        save_data(data)
+        update_user(
+            query.from_user.id,
+            word=index
+        )
 
-        await show_word(query, current, index)
+        await show_word(
+            query,
+            current,
+            index
+        )
 
     elif action == "quiz":
-        await show_quiz(query, 0)
+
+        await show_quiz(
+            query,
+            0
+        )
 
     elif action.startswith("answer_"):
+
         _, question_index, selected, correct = action.split("_")
 
         question_index = int(question_index)
@@ -285,31 +401,48 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         correct = int(correct)
 
         if selected == correct:
-            data, user = get_user(query.from_user.id)
-            user["xp"] += 10
-            save_data(data)
+
+            user = get_user(
+                query.from_user.id
+            )
+
+            update_user(
+                query.from_user.id,
+                xp=user["xp"] + 10
+            )
 
             await query.answer(
                 "✅ Правильно! +10 XP",
                 show_alert=True
             )
 
-            await show_quiz(query, question_index + 1)
+            await show_quiz(
+                query,
+                question_index + 1
+            )
 
         else:
+
             await query.answer(
                 "❌ Пока неверно. Попробуй ещё раз!",
                 show_alert=True
             )
 
     elif action == "progress":
-        data, user = get_user(query.from_user.id)
 
-        lesson_number = min(user["lesson"] + 1, len(LESSONS))
+        user = get_user(
+            query.from_user.id
+        )
+
+        lesson_number = min(
+            user["lesson"] + 1,
+            len(LESSONS)
+        )
 
         text = (
             "📊 ТВОЙ ПРОГРЕСС\n\n"
-            f"🇨🇳 Урок: {lesson_number}/{len(LESSONS)}\n"
+            f"🇨🇳 Урок: "
+            f"{lesson_number}/{len(LESSONS)}\n"
             f"⭐ XP: {user['xp']}\n"
             f"🔥 Серия: {user['streak']} день\n\n"
             "Продолжай заниматься каждый день! 💪"
@@ -318,36 +451,58 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             text,
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton(
-                    "🏠 Главное меню",
-                    callback_data="menu"
-                )]
+                [
+                    InlineKeyboardButton(
+                        "🏠 Главное меню",
+                        callback_data="menu"
+                    )
+                ]
             ])
         )
 
     elif action == "repeat":
-        data, user = get_user(query.from_user.id)
-        lesson_index = min(user["lesson"], len(LESSONS) - 1)
+
+        user = get_user(
+            query.from_user.id
+        )
+
+        lesson_index = min(
+            user["lesson"],
+            len(LESSONS) - 1
+        )
+
         current = LESSONS[lesson_index]
 
         text = "🔁 ПОВТОРЕНИЕ\n\n"
 
         for word, pinyin, translation in current["words"]:
-            text += f"🇨🇳 {word} — {pinyin} — {translation}\n"
 
-        text += "\nПрочитай каждое слово вслух 3 раза. 🔊"
+            text += (
+                f"🇨🇳 {word} — "
+                f"{pinyin} — "
+                f"{translation}\n"
+            )
+
+        text += (
+            "\nПрочитай каждое слово "
+            "вслух 3 раза. 🔊"
+        )
 
         await query.edit_message_text(
             text,
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton(
-                    "🧠 Пройти тест",
-                    callback_data="quiz"
-                )],
-                [InlineKeyboardButton(
-                    "🏠 Главное меню",
-                    callback_data="menu"
-                )]
+                [
+                    InlineKeyboardButton(
+                        "🧠 Пройти тест",
+                        callback_data="quiz"
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "🏠 Главное меню",
+                        callback_data="menu"
+                    )
+                ]
             ])
         )
 
@@ -357,17 +512,47 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =========================
 
 def main():
+
     if not TOKEN:
-        raise RuntimeError("BOT_TOKEN is missing")
+        raise RuntimeError(
+            "BOT_TOKEN is missing"
+        )
 
-    app = Application.builder().token(TOKEN).build()
+    if not DATABASE_URL:
+        raise RuntimeError(
+            "DATABASE_URL is missing"
+        )
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(button))
+    print("Connecting to PostgreSQL...")
+
+    init_database()
+
+    print("PostgreSQL ready ✅")
+
+    app = (
+        Application
+        .builder()
+        .token(TOKEN)
+        .build()
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "start",
+            start
+        )
+    )
+
+    app.add_handler(
+        CallbackQueryHandler(
+            button
+        )
+    )
 
     print("Chinese bot started 🇨🇳")
+
     app.run_polling()
 
 
 if __name__ == "__main__":
-    main()    
+    main()
