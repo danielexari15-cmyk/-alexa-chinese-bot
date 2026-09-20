@@ -1,4 +1,7 @@
 import os
+import json
+from pathlib import Path
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -9,147 +12,349 @@ from telegram.ext import (
 
 TOKEN = os.environ.get("BOT_TOKEN")
 
-main_keyboard = InlineKeyboardMarkup([
-    [InlineKeyboardButton("🇨🇳 Урок дня", callback_data="lesson")],
-    [
-        InlineKeyboardButton("🔁 Повторение", callback_data="repeat"),
-        InlineKeyboardButton("📊 Прогресс", callback_data="progress"),
-    ],
-])
+DATA_FILE = Path("progress.json")
 
+# =========================
+# УРОКИ
+# =========================
+
+LESSONS = [
+    {
+        "title": "Знакомство 👋",
+        "words": [
+            ("你好", "nǐ hǎo", "Привет"),
+            ("谢谢", "xiè xie", "Спасибо"),
+            ("再见", "zài jiàn", "До свидания"),
+            ("我", "wǒ", "Я"),
+            ("你", "nǐ", "Ты"),
+        ],
+        "quiz": [
+            ("Что означает 你好?", ["Привет", "Спасибо", "Пока"], 0),
+            ("Как сказать «Спасибо»?", ["再见", "谢谢", "你好"], 1),
+            ("Что означает 我?", ["Ты", "Я", "Мы"], 1),
+        ],
+    },
+    {
+        "title": "Числа 🔢",
+        "words": [
+            ("一", "yī", "Один"),
+            ("二", "èr", "Два"),
+            ("三", "sān", "Три"),
+            ("四", "sì", "Четыре"),
+            ("五", "wǔ", "Пять"),
+        ],
+        "quiz": [
+            ("Что означает 三?", ["Один", "Три", "Пять"], 1),
+            ("Как будет «два»?", ["二", "四", "五"], 0),
+            ("Что означает 五?", ["Пять", "Три", "Четыре"], 0),
+        ],
+    },
+    {
+        "title": "Еда 🍜",
+        "words": [
+            ("水", "shuǐ", "Вода"),
+            ("茶", "chá", "Чай"),
+            ("米饭", "mǐ fàn", "Рис"),
+            ("苹果", "píng guǒ", "Яблоко"),
+            ("咖啡", "kā fēi", "Кофе"),
+        ],
+        "quiz": [
+            ("Что означает 水?", ["Вода", "Чай", "Рис"], 0),
+            ("Как будет «чай»?", ["咖啡", "茶", "苹果"], 1),
+            ("Что означает 苹果?", ["Рис", "Кофе", "Яблоко"], 2),
+        ],
+    },
+]
+
+
+# =========================
+# ПРОГРЕСС
+# =========================
+
+def load_data():
+    if not DATA_FILE.exists():
+        return {}
+    try:
+        return json.loads(DATA_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def save_data(data):
+    DATA_FILE.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def get_user(user_id):
+    data = load_data()
+    uid = str(user_id)
+
+    if uid not in data:
+        data[uid] = {
+            "lesson": 0,
+            "word": 0,
+            "quiz": 0,
+            "xp": 0,
+            "streak": 1,
+        }
+        save_data(data)
+
+    return data, data[uid]
+
+
+# =========================
+# КНОПКИ
+# =========================
+
+def main_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🇨🇳 Урок дня", callback_data="lesson")],
+        [
+            InlineKeyboardButton("🧠 Тест", callback_data="quiz"),
+            InlineKeyboardButton("📊 Прогресс", callback_data="progress"),
+        ],
+        [InlineKeyboardButton("🔁 Повторение", callback_data="repeat")],
+    ])
+
+
+# =========================
+# /START
+# =========================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "🇨🇳 你好! Добро пожаловать!\n\n"
         "Я твой персональный преподаватель китайского языка. 🧠\n\n"
-        "Каждый день мы будем изучать новые слова, "
-        "тренировать произношение и повторять пройденное.\n\n"
-        "🔥 Начинаем с HSK 1.\n"
-        "⏱ Урок займёт примерно 10–15 минут.\n\n"
-        "Выбери действие 👇"
+        "Каждый день будем учить новые слова, "
+        "тренироваться и проходить мини-тесты.\n\n"
+        "🎯 Цель: постепенно пройти HSK 1.\n"
+        "⏱ 10–15 минут в день.\n\n"
+        "Выбирай действие 👇"
     )
 
-    await update.message.reply_text(text, reply_markup=main_keyboard)
+    await update.message.reply_text(
+        text,
+        reply_markup=main_keyboard()
+    )
 
 
-async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# =========================
+# УРОК
+# =========================
+
+async def lesson(query):
+    data, user = get_user(query.from_user.id)
+
+    lesson_index = min(user["lesson"], len(LESSONS) - 1)
+    current = LESSONS[lesson_index]
+
+    user["word"] = 0
+    save_data(data)
+
+    await show_word(query, current, 0)
+
+
+async def show_word(query, lesson, index):
+    word, pinyin, translation = lesson["words"][index]
+
+    text = (
+        f"🇨🇳 {lesson['title']}\n\n"
+        f"Слово {index + 1}/{len(lesson['words'])}\n\n"
+        f"🔤 {word}\n"
+        f"🗣 Pinyin: {pinyin}\n"
+        f"🇷🇺 {translation}\n\n"
+        "Прочитай вслух 3 раза. 🔊"
+    )
+
+    if index + 1 < len(lesson["words"]):
+        keyboard = [[
+            InlineKeyboardButton(
+                "➡️ Следующее слово",
+                callback_data=f"word_{index + 1}"
+            )
+        ]]
+    else:
+        keyboard = [[
+            InlineKeyboardButton(
+                "🧠 Пройти тест",
+                callback_data="quiz"
+            )
+        ]]
+
+    keyboard.append([
+        InlineKeyboardButton("🏠 Главное меню", callback_data="menu")
+    ])
+
+    await query.edit_message_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+
+# =========================
+# ТЕСТ
+# =========================
+
+async def show_quiz(query, question_index=0):
+    data, user = get_user(query.from_user.id)
+
+    lesson_index = min(user["lesson"], len(LESSONS) - 1)
+    current = LESSONS[lesson_index]
+
+    if question_index >= len(current["quiz"]):
+        user["xp"] += 30
+
+        if user["lesson"] < len(LESSONS) - 1:
+            user["lesson"] += 1
+
+        user["quiz"] = 0
+        save_data(data)
+
+        await query.edit_message_text(
+            "🎉 Урок завершён!\n\n"
+            "Ты получил +30 XP ⭐\n\n"
+            "Следующий урок разблокирован. 🔓",
+            reply_markup=main_keyboard()
+        )
+        return
+
+    question, answers, correct = current["quiz"][question_index]
+
+    buttons = []
+
+    for i, answer in enumerate(answers):
+        buttons.append([
+            InlineKeyboardButton(
+                answer,
+                callback_data=f"answer_{question_index}_{i}_{correct}"
+            )
+        ])
+
+    buttons.append([
+        InlineKeyboardButton("🏠 Главное меню", callback_data="menu")
+    ])
+
+    await query.edit_message_text(
+        f"🧠 Вопрос {question_index + 1}/{len(current['quiz'])}\n\n"
+        f"{question}",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+
+# =========================
+# CALLBACK
+# =========================
+
+async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    if query.data == "lesson":
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("➡️ Следующее слово", callback_data="word2")],
-            [InlineKeyboardButton("🏠 Главное меню", callback_data="menu")],
-        ])
+    action = query.data
 
+    if action == "menu":
         await query.edit_message_text(
-            "🇨🇳 УРОК 1 — Знакомство\n\n"
-            "Сегодня начнём с самого важного.\n\n"
-            "1️⃣ 你好\n"
-            "Pinyin: nǐ hǎo\n"
-            "Перевод: Привет 👋\n\n"
-            "🗣 Произношение примерно:\n"
-            "«ни хао»\n\n"
-            "Нажми ниже, когда запомнишь 👇",
-            reply_markup=keyboard,
+            "🇨🇳 Главное меню\n\nЧто будем делать? 👇",
+            reply_markup=main_keyboard()
         )
 
-    elif query.data == "word2":
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🧠 Проверить себя", callback_data="quiz1")],
-            [InlineKeyboardButton("🏠 Главное меню", callback_data="menu")],
-        ])
+    elif action == "lesson":
+        await lesson(query)
 
-        await query.edit_message_text(
-            "2️⃣ 谢谢\n\n"
-            "Pinyin: xièxie\n"
-            "Перевод: Спасибо 🙏\n\n"
-            "🗣 Примерно: «сье-сье»\n\n"
-            "Пример:\n"
-            "谢谢你 — xièxie nǐ\n"
-            "Спасибо тебе.\n\n"
-            "Теперь маленький тест 👇",
-            reply_markup=keyboard,
-        )
+    elif action.startswith("word_"):
+        index = int(action.split("_")[1])
 
-    elif query.data == "quiz1":
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Привет", callback_data="wrong")],
-            [InlineKeyboardButton("Спасибо", callback_data="correct")],
-            [InlineKeyboardButton("До свидания", callback_data="wrong")],
-        ])
+        data, user = get_user(query.from_user.id)
+        lesson_index = min(user["lesson"], len(LESSONS) - 1)
+        current = LESSONS[lesson_index]
 
-        await query.edit_message_text(
-            "🧠 ТЕСТ\n\n"
-            "Что означает 谢谢?",
-            reply_markup=keyboard,
-        )
+        user["word"] = index
+        save_data(data)
 
-    elif query.data == "correct":
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("➡️ Продолжить урок", callback_data="finish")],
-        ])
+        await show_word(query, current, index)
 
-        await query.edit_message_text(
-            "✅ Правильно!\n\n"
-            "谢谢 = Спасибо 🙏\n\n"
-            "Отличное начало! 🇨🇳",
-            reply_markup=keyboard,
-        )
+    elif action == "quiz":
+        await show_quiz(query, 0)
 
-    elif query.data == "wrong":
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔄 Попробовать ещё раз", callback_data="quiz1")],
-        ])
+    elif action.startswith("answer_"):
+        _, question_index, selected, correct = action.split("_")
 
-        await query.edit_message_text(
-            "❌ Пока нет.\n\n"
-            "Подсказка: 谢谢 говорят, когда хотят поблагодарить человека. 😉",
-            reply_markup=keyboard,
-        )
+        question_index = int(question_index)
+        selected = int(selected)
+        correct = int(correct)
 
-    elif query.data == "finish":
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🏠 Главное меню", callback_data="menu")],
-        ])
+        if selected == correct:
+            data, user = get_user(query.from_user.id)
+            user["xp"] += 10
+            save_data(data)
 
-        await query.edit_message_text(
-            "🎉 Первый мини-урок завершён!\n\n"
-            "Сегодня ты выучил:\n\n"
-            "你好 — nǐ hǎo — привет\n"
-            "谢谢 — xièxie — спасибо\n\n"
-            "🔥 Серия: 1 день\n"
-            "⭐ +10 XP\n\n"
-            "明天见! — До завтра! 🇨🇳",
-            reply_markup=keyboard,
-        )
+            await query.answer(
+                "✅ Правильно! +10 XP",
+                show_alert=True
+            )
 
-    elif query.data == "repeat":
-        await query.edit_message_text(
-            "🔁 Повторение\n\n"
-            "Здесь будут появляться слова, которые тебе нужно повторить.\n\n"
-            "Сначала пройди первый урок 🇨🇳",
-            reply_markup=main_keyboard,
-        )
+            await show_quiz(query, question_index + 1)
 
-    elif query.data == "progress":
-        await query.edit_message_text(
+        else:
+            await query.answer(
+                "❌ Пока неверно. Попробуй ещё раз!",
+                show_alert=True
+            )
+
+    elif action == "progress":
+        data, user = get_user(query.from_user.id)
+
+        lesson_number = min(user["lesson"] + 1, len(LESSONS))
+
+        text = (
             "📊 ТВОЙ ПРОГРЕСС\n\n"
-            "🇨🇳 Уровень: HSK 1\n"
-            "📚 Изучено слов: 0\n"
-            "⭐ XP: 0\n"
-            "🔥 Серия: 0 дней\n\n"
-            "Это только начало 🚀",
-            reply_markup=main_keyboard,
+            f"🇨🇳 Урок: {lesson_number}/{len(LESSONS)}\n"
+            f"⭐ XP: {user['xp']}\n"
+            f"🔥 Серия: {user['streak']} день\n\n"
+            "Продолжай заниматься каждый день! 💪"
         )
 
-    elif query.data == "menu":
         await query.edit_message_text(
-            "🇨🇳 Главное меню\n\n"
-            "Что будем делать?",
-            reply_markup=main_keyboard,
+            text,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(
+                    "🏠 Главное меню",
+                    callback_data="menu"
+                )]
+            ])
         )
 
+    elif action == "repeat":
+        data, user = get_user(query.from_user.id)
+        lesson_index = min(user["lesson"], len(LESSONS) - 1)
+        current = LESSONS[lesson_index]
+
+        text = "🔁 ПОВТОРЕНИЕ\n\n"
+
+        for word, pinyin, translation in current["words"]:
+            text += f"🇨🇳 {word} — {pinyin} — {translation}\n"
+
+        text += "\nПрочитай каждое слово вслух 3 раза. 🔊"
+
+        await query.edit_message_text(
+            text,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(
+                    "🧠 Пройти тест",
+                    callback_data="quiz"
+                )],
+                [InlineKeyboardButton(
+                    "🏠 Главное меню",
+                    callback_data="menu"
+                )]
+            ])
+        )
+
+
+# =========================
+# ЗАПУСК
+# =========================
 
 def main():
     if not TOKEN:
@@ -158,11 +363,11 @@ def main():
     app = Application.builder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(buttons))
+    app.add_handler(CallbackQueryHandler(button))
 
     print("Chinese bot started 🇨🇳")
     app.run_polling()
 
 
 if __name__ == "__main__":
-    main()
+    main()    
