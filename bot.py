@@ -235,25 +235,29 @@ async def show_word(query, lesson, index):
         f"🗣 Pinyin: {pinyin}\n"
         f"🇷🇺 {translation}\n\n"
         "Прочитай вслух 3 раза. 🔊"
-    )
-
+    )        keyboard = [[
+        InlineKeyboardButton(
+            "🔊 Слушать произношение",
+            callback_data=f"audio_{index}"
+        )
+    ]]
     if index + 1 < len(lesson["words"]):
 
-        keyboard = [[
+        keyboard.append([
             InlineKeyboardButton(
                 "➡️ Следующее слово",
                 callback_data=f"word_{index + 1}"
             )
-        ]]
+        ])
 
     else:
 
-        keyboard = [[
+        keyboard.append([
             InlineKeyboardButton(
                 "🧠 Пройти тест",
                 callback_data="quiz"
             )
-        ]]
+        ])
 
     keyboard.append([
         InlineKeyboardButton(
@@ -340,7 +344,22 @@ async def show_quiz(query, question_index=0):
 # =========================
 # CALLBACK
 # =========================
+async def send_pronunciation(query, word):
+    audio = io.BytesIO()
 
+    tts = gTTS(
+        text=word,
+        lang="zh-CN"
+    )
+    tts.write_to_fp(audio)
+
+    audio.seek(0)
+    audio.name = "pronunciation.mp3"
+
+    await query.message.reply_audio(
+        audio=audio,
+        title=f"Произношение: {word}"
+    )
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     query = update.callback_query
@@ -348,7 +367,21 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     action = query.data
+    if action.startswith("audio_"):
+        index = int(action.split("_")[1])
 
+        user = get_user(query.from_user.id)
+
+        lesson_index = min(
+            user["lesson"],
+            len(LESSONS) - 1
+        )
+
+        current = LESSONS[lesson_index]
+        word = current["words"][index][0]
+
+        await send_pronunciation(query, word)
+        return
     if action == "menu":
 
         await query.edit_message_text(
