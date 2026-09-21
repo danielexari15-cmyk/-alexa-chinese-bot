@@ -4,7 +4,7 @@ import psycopg
 from gtts import gTTS
 
 
-from gtts import gTTS
+fro
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
