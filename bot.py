@@ -1,6 +1,9 @@
 import os
 import psycopg
-
+import os
+import io
+import psycopg
+from gtts import gTTS
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
