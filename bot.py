@@ -235,7 +235,8 @@ async def show_word(query, lesson, index):
         f"🗣 Pinyin: {pinyin}\n"
         f"🇷🇺 {translation}\n\n"
         "Прочитай вслух 3 раза. 🔊"
-    )        keyboard = [[
+    )      
+    keyboard = [[
         InlineKeyboardButton(
             "🔊 Слушать произношение",
             callback_data=f"audio_{index}"
