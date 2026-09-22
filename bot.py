@@ -345,7 +345,7 @@ async def show_quiz(query, question_index=0):
 # =========================
 # CALLBACK
 # =========================
-async def send_pronunciation(query, word):
+async def send_pronunciation(query, word, context):
     audio = io.BytesIO()
 
     tts = gTTS(
@@ -357,10 +357,22 @@ async def send_pronunciation(query, word):
     audio.seek(0)
     audio.name = "pronunciation.mp3"
 
-    await query.message.reply_audio(
-        audio=audio,
-        title=f"Произношение: {word}"
+    old_message_id = context.user_data.get("pronunciation_message_id")
+
+    if old_message_id:
+        try:
+            await context.bot.delete_message(
+                chat_id=query.message.chat_id,
+                message_id=old_message_id
+            )
+        except Exception:
+            pass
+
+    message = await query.message.reply_voice(
+        voice=audio
     )
+
+    context.user_data["pronunciation_message_id"] = message.message_id
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     query = update.callback_query
@@ -381,7 +393,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         current = LESSONS[lesson_index]
         word = current["words"][index][0]
 
-        await send_pronunciation(query, word)
+        await send_pronunciation(query, word, context)
         return
     if action == "menu":
 
